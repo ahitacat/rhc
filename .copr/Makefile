@@ -40,7 +40,11 @@ srpm: deps
 		$(spec)/.copr/rhc.spec.in > $(spec)/rhc.spec
 	make PKGNAME=$(PKGNAME) VERSION=$(VERSION)-$(RELEASE) dist
 	install -D -m644 $(PKGNAME)-$(VERSION)-$(RELEASE).tar.gz $(SOURCEDIR)
-	spectool --get-files --source 1 --sourcedir $(spec)/rhc.spec
+	git clone https://github.com/RedHatInsights/yggdrasil/tree/yggdrasil-0.2
+	cd yggdrasil
+	make dist
+	cp yggdrasil*.tar.gz ../yggdrasil-0.2.tar.gz
+	cd ..
 	spectool --get-files --source 2 --sourcedir $(spec)/rhc.spec
 	rpmbuild -bs $(spec)/rhc.spec
 	install -D -m644 $(SRCRPMDIR)/*.rpm $(outdir)/
