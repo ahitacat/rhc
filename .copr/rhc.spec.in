@@ -87,7 +87,7 @@ make PREFIX=%{_prefix} \
      'PROVIDER=@PROVIDER@' \
      install
 
-cd %{_builddir}/%{name}/yggdrasil-worker-package-manager
+cd %{_builddir}/%{name}/yggdrasil-worker-package-manager-0.1.2
 install -D -m 755 rhc-package-manager-worker %{buildroot}%{_libexecdir}/@LONGNAME@/
 install -D -m 644 config.toml %{buildroot}%{_sysconfdir}/@LONGNAME@/workers/rhc-package-manager.toml
 
