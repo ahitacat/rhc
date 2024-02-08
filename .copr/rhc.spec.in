@@ -15,8 +15,9 @@ License: GPLv3
 URL:     https://github.com/redhatinsights/rhc
 
 Source0: %{name}-%{version}-@RELEASE@.tar.gz
-Source1: https://github.com/RedHatInsights/yggdrasil/releases/download/0.2.2/yggdrasil-0.2.2.tar.gz
-Source2: https://github.com/RedHatInsights/yggdrasil-worker-package-manager/releases/download/0.1.0/yggdrasil-worker-package-manager-0.1.2.tar.gz
+Source1: https://github.com/RedHatInsights/yggdrasil/releases/download/0.2.4/yggdrasil-0.2.4.tar.gz
+Source2: https://github.com/RedHatInsights/yggdrasil-worker-package-manager/releases/download/0.1.0/yggdrasil-worker-package-manager-0.1.0.tar.gz
+
 
 ExclusiveArch: %{go_arches}
 
@@ -26,6 +27,7 @@ BuildRequires: git
 BuildRequires: golang
 BuildRequires: dbus-devel
 BuildRequires: systemd-devel
+BuildRequires: systemd
 
 
 %description
@@ -40,17 +42,17 @@ MQTT client.
 
 
 %build
-cd %{_builddir}/%{name}/yggdrasil-0.2.2
+cd %{_builddir}/%{name}/yggdrasil-0.2.4
 make PREFIX=%{_prefix} \
      SYSCONFDIR=%{_sysconfdir} \
      LOCALSTATEDIR=%{_localstatedir} \
      SHORTNAME=@SHORTNAME@ \
      LONGNAME=@LONGNAME@ \
      PKGNAME=@PKGNAME@ \
-     BRANDNAME=@BRANDNAME@ \
      TOPICPREFIX=@TOPICPREFIX@ \
      VERSION=%{version} \
      DATAHOST=@DATAHOST@ \
+     SERVICENAME=@SERVICENAME@ \
      'PROVIDER=@PROVIDER@'
 
 cd %{_builddir}/%{name}/yggdrasil-worker-package-manager-0.1.2
@@ -63,15 +65,15 @@ make PREFIX=%{_prefix} \
      SHORTNAME=@SHORTNAME@ \
      LONGNAME=@LONGNAME@ \
      PKGNAME=@PKGNAME@ \
-     BRANDNAME=@BRANDNAME@ \
      TOPICPREFIX=@TOPICPREFIX@ \
      VERSION=%{version} \
      DATAHOST=@DATAHOST@ \
+     SERVICENAME=@SERVICENAME@ \
      'PROVIDER=@PROVIDER@'
 
 
 %install
-cd %{_builddir}/%{name}/yggdrasil-0.2.2
+cd %{_builddir}/%{name}/yggdrasil-0.2.4
 make PREFIX=%{_prefix} \
      SYSCONFDIR=%{_sysconfdir} \
      LOCALSTATEDIR=%{_localstatedir} \
@@ -79,10 +81,10 @@ make PREFIX=%{_prefix} \
      SHORTNAME=@SHORTNAME@ \
      LONGNAME=@LONGNAME@ \
      PKGNAME=@PKGNAME@ \
-     BRANDNAME=@BRANDNAME@ \
      TOPICPREFIX=@TOPICPREFIX@ \
      VERSION=%{version} \
      DATAHOST=@DATAHOST@ \
+     SERVICENAME=@SERVICENAME@ \
      'PROVIDER=@PROVIDER@' \
      install
 
@@ -98,10 +100,10 @@ make PREFIX=%{_prefix} \
      SHORTNAME=@SHORTNAME@ \
      LONGNAME=@LONGNAME@ \
      PKGNAME=@PKGNAME@ \
-     BRANDNAME=@BRANDNAME@ \
      TOPICPREFIX=@TOPICPREFIX@ \
      VERSION=%{version} \
      DATAHOST=@DATAHOST@ \
+     SERVICENAME=@SERVICENAME@ \
      'PROVIDER=@PROVIDER@' \
      install
 

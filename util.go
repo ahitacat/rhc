@@ -8,7 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	ini "git.sr.ht/~spc/go-ini"
+	ini "github.com/subpop/go-ini"
+	"github.com/subpop/go-log"
 
 	"github.com/urfave/cli/v2"
 	"golang.org/x/sys/unix"
@@ -131,4 +132,24 @@ func GuessAPIURL() (string, error) {
 	}
 
 	return uString, nil
+}
+
+// hasPriorityErrors checks if the errorMessage map has any error
+// with a higher priority than the logLevel configure.
+func hasPriorityErrors(errorMessages map[string]LogMessage, level log.Level) bool {
+	for _, logMsg := range errorMessages {
+		if logMsg.level <= level {
+			return true
+		}
+	}
+	return false
+}
+
+// getLocale tries to get current locale
+func getLocale() string {
+	// FIXME: Locale should be detected in more reliable way. We are going to support
+	//        localization in better way. Maybe we could use following go module
+	//        https://github.com/Xuanwo/go-locale. Maybe some other will be better.
+	locale := os.Getenv("LANG")
+	return locale
 }

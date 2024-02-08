@@ -10,38 +10,76 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"git.sr.ht/~spc/go-log"
+	"github.com/subpop/go-log"
 	"golang.org/x/term"
 
 	"github.com/briandowns/spinner"
-	systemd "github.com/coreos/go-systemd/v22/dbus"
 	"github.com/redhatinsights/rhc/internal/http"
 	"github.com/urfave/cli/v2"
 	"github.com/urfave/cli/v2/altsrc"
 )
 
-const redColor = "\u001B[31m"
-const greenColor = "\u001B[32m"
-const blueColor = "\u001B[36m"
-const endColor = "\u001B[0m"
+type LogMessage struct {
+	level   log.Level
+	message error
+}
 
-// Colorful prefixes
-const ttyConnectedPrefix = greenColor + "●" + endColor
-const ttyDisconnectedPrefix = redColor + "●" + endColor
-const ttyInfoPrefix = blueColor + "●" + endColor
-const ttyErrorPrefix = redColor + "!" + endColor
+const (
+	colorGreen  = "\u001B[32m"
+	colorYellow = "\u001B[33m"
+	colorRed    = "\u001B[31m"
+	colorReset  = "\u001B[0m"
+)
 
-// Black & white prefixes. Unicode characters
-const bwConnectedPrefix = "✓"
-const bwDisconnectedPrefix = "𐄂"
-const bwErrorPrefix = "!"
-const bwInfoPrefix = "·"
+// userInterfaceSettings manages standard output preference.
+// It tracks colors, icons and machine-readable output (e.g. json).
+//
+// It is instantiated via uiSettings by calling configureUISettings.
+type userInterfaceSettings struct {
+	// isMachineReadable describes the machine-readable mode (e.g., `--format json`)
+	isMachineReadable bool
+	// isRich describes the ability to display colors and animations
+	isRich    bool
+	iconOK    string
+	iconInfo  string
+	iconError string
+}
+
+// uiSettings is an instance that keeps actual data of output preference.
+//
+// It is managed by calling the configureUISettings method.
+var uiSettings = userInterfaceSettings{}
+
+// configureUISettings is called by the CLI library when it loads up.
+// It sets up the uiSettings object.
+func configureUISettings(ctx *cli.Context) {
+	if ctx.Bool("no-color") {
+		uiSettings = userInterfaceSettings{
+			isRich:            false,
+			isMachineReadable: false,
+			iconOK:            "✓",
+			iconInfo:          "·",
+			iconError:         "𐄂",
+		}
+	} else {
+		uiSettings = userInterfaceSettings{
+			isRich:            true,
+			isMachineReadable: false,
+			iconOK:            colorGreen + "●" + colorReset,
+			iconInfo:          colorYellow + "●" + colorReset,
+			iconError:         colorRed + "●" + colorReset,
+		}
+	}
+}
 
 // showProgress calls function and, when it is possible display spinner with
 // some progress message.
-func showProgress(progressMessage string, isColorful bool, function func() error) error {
+func showProgress(
+	progressMessage string,
+	function func() error,
+) error {
 	var s *spinner.Spinner
-	if isColorful {
+	if uiSettings.isRich {
 		s = spinner.New(spinner.CharSets[9], 100*time.Millisecond)
 		s.Suffix = progressMessage
 		s.Start()
@@ -49,27 +87,6 @@ func showProgress(progressMessage string, isColorful bool, function func() error
 		defer func() { s.Stop() }()
 	}
 	return function()
-}
-
-// getColorPreferences tries to get color preferences form context
-func getColorPreferences(ctx *cli.Context) (connectedPrefix string, disconnectedPrefix string,
-	errorPrefix string, infoPrefix string, isColorful bool) {
-	noColor := ctx.Bool("no-color")
-
-	if noColor {
-		isColorful = false
-		connectedPrefix = bwConnectedPrefix
-		disconnectedPrefix = bwDisconnectedPrefix
-		errorPrefix = bwErrorPrefix
-		infoPrefix = bwInfoPrefix
-	} else {
-		isColorful = true
-		connectedPrefix = ttyConnectedPrefix
-		disconnectedPrefix = ttyDisconnectedPrefix
-		errorPrefix = ttyErrorPrefix
-		infoPrefix = ttyInfoPrefix
-	}
-	return
 }
 
 // showTimeDuration shows table with duration of each sub-action
@@ -86,17 +103,21 @@ func showTimeDuration(durations map[string]time.Duration) {
 }
 
 // showErrorMessages shows table with all error messages gathered during action
-func showErrorMessages(action string, errorMessages map[string]error) error {
-	if len(errorMessages) > 0 {
+func showErrorMessages(action string, errorMessages map[string]LogMessage) error {
+	if hasPriorityErrors(errorMessages, log.CurrentLevel()) {
 		fmt.Println()
 		fmt.Printf("The following errors were encountered during %s:\n\n", action)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		_, _ = fmt.Fprintln(w, "STEP\tERROR\t")
-		for svc, err := range errorMessages {
-			_, _ = fmt.Fprintf(w, "%v\t%v\n", svc, err)
+		_, _ = fmt.Fprintln(w, "TYPE\tSTEP\tERROR\t")
+		for step, logMsg := range errorMessages {
+			if logMsg.level <= log.CurrentLevel() {
+				_, _ = fmt.Fprintf(w, "%v\t%v\t%v\n", logMsg.level, step, logMsg.message)
+			}
 		}
 		_ = w.Flush()
-		return cli.Exit("", 1)
+		if hasPriorityErrors(errorMessages, log.LevelError) {
+			return cli.Exit("", 1)
+		}
 	}
 	return nil
 }
@@ -158,8 +179,6 @@ func registerRHSM(ctx *cli.Context) (string, error) {
 	}
 	var successMsg string
 
-	_, _, _, _, isColorful := getColorPreferences(ctx)
-
 	if uuid == "" {
 		username := ctx.String("username")
 		password := ctx.String("password")
@@ -186,7 +205,7 @@ func registerRHSM(ctx *cli.Context) (string, error) {
 		}
 
 		var s *spinner.Spinner
-		if isColorful {
+		if uiSettings.isRich {
 			s = spinner.New(spinner.CharSets[9], 100*time.Millisecond)
 			s.Suffix = " Connecting to Red Hat Subscription Management..."
 			s.Start()
@@ -210,7 +229,7 @@ func registerRHSM(ctx *cli.Context) (string, error) {
 				   the organization. */
 				if len(orgs) > 0 {
 					// Stop spinner to be able to display message and ask for organization
-					if isColorful {
+					if uiSettings.isRich {
 						s.Stop()
 					}
 
@@ -231,7 +250,7 @@ func registerRHSM(ctx *cli.Context) (string, error) {
 					fmt.Printf("\n")
 
 					// Start spinner again
-					if isColorful {
+					if uiSettings.isRich {
 						s.Start()
 					}
 
@@ -261,7 +280,7 @@ func connectAction(ctx *cli.Context) error {
 
 	var start time.Time
 	durations := make(map[string]time.Duration)
-	errorMessages := make(map[string]error)
+	errorMessages := make(map[string]LogMessage)
 	hostname, err := os.Hostname()
 	if err != nil {
 		return cli.Exit(err, 1)
@@ -269,49 +288,67 @@ func connectAction(ctx *cli.Context) error {
 
 	fmt.Printf("Connecting %v to %v.\nThis might take a few seconds.\n\n", hostname, Provider)
 
-	connectedPrefix, disconnectedPrefix, errorPrefix, infoPrefix, isColorful := getColorPreferences(ctx)
-
 	/* 1. Register to RHSM, because we need to get consumer certificate. This blocks following action */
 	start = time.Now()
 	var returnedMsg string
 	returnedMsg, err = registerRHSM(ctx)
 	if err != nil {
-		errorMessages["rhsm"] = fmt.Errorf("cannot connect to Red Hat Subscription Management: %w", err)
-		fmt.Printf(errorPrefix + " Cannot connect to Red Hat Subscription Management\n")
+		errorMessages["rhsm"] = LogMessage{
+			level: log.LevelError,
+			message: fmt.Errorf("cannot connect to Red Hat Subscription Management: %w",
+				err)}
+		fmt.Printf(
+			uiSettings.iconError + " Cannot connect to Red Hat Subscription Management\n",
+		)
 	} else {
-		fmt.Printf(connectedPrefix + " " + returnedMsg + "\n")
+		fmt.Printf(uiSettings.iconOK + " " + returnedMsg + "\n")
 	}
 	durations["rhsm"] = time.Since(start)
 
 	/* 2. Register insights-client */
-	if _, exist := errorMessages["rhsm"]; exist {
-		fmt.Printf(disconnectedPrefix + " Skipping connection to Red Hat Insights\n")
+	if errors, exist := errorMessages["rhsm"]; exist {
+		if errors.level == log.LevelError {
+			fmt.Printf(
+				uiSettings.iconError + " Skipping connection to Red Hat Insights\n",
+			)
+		}
 	} else {
 		start = time.Now()
-		err = showProgress(" Connecting to Red Hat Insights...", isColorful, registerInsights)
+		err = showProgress(" Connecting to Red Hat Insights...", registerInsights)
 		if err != nil {
-			errorMessages["insights"] = fmt.Errorf("cannot connect to Red Hat Insights: %w", err)
-			fmt.Printf(errorPrefix + " Cannot connect to Red Hat Insights\n")
+			errorMessages["insights"] = LogMessage{
+				level: log.LevelError,
+				message: fmt.Errorf("cannot connect to Red Hat Insights: %w",
+					err)}
+			fmt.Printf(uiSettings.iconError + " Cannot connect to Red Hat Insights\n")
 		} else {
-			fmt.Printf(connectedPrefix + " Connected to Red Hat Insights\n")
+			fmt.Printf(uiSettings.iconOK + " Connected to Red Hat Insights\n")
 		}
 		durations["insights"] = time.Since(start)
 	}
 
-	/* 3. Start rhcd daemon */
-	if _, exist := errorMessages["rhsm"]; exist {
-		fmt.Printf(disconnectedPrefix+" Skipping activation of %v daemon\n", BrandName)
+	/* 3. Start yggdrasil (rhcd) service */
+	if errors, exist := errorMessages["rhsm"]; exist {
+		if errors.level == log.LevelError {
+			fmt.Printf(
+				uiSettings.iconError+" Skipping activation of %v service\n",
+				ServiceName,
+			)
+		}
 	} else {
 		start = time.Now()
-		progressMessage := fmt.Sprintf(" Activating the %v daemon", BrandName)
-		err = showProgress(progressMessage, isColorful, activate)
+		progressMessage := fmt.Sprintf(" Activating the %v service", ServiceName)
+		err = showProgress(progressMessage, activateService)
 		if err != nil {
-			errorMessages[BrandName] = fmt.Errorf("cannot activate daemon: %w", err)
-			fmt.Printf(errorPrefix+" Cannot activate the %v daemon\n", BrandName)
+			errorMessages[ServiceName] = LogMessage{
+				level: log.LevelError,
+				message: fmt.Errorf("cannot activate %s service: %w",
+					ServiceName, err)}
+			fmt.Printf(uiSettings.iconError+" Cannot activate the %v service\n", ServiceName)
 		} else {
-			fmt.Printf(connectedPrefix+" Activated the %v daemon\n", BrandName)
+			fmt.Printf(uiSettings.iconOK+" Activated the %v service\n", ServiceName)
 		}
-		durations[BrandName] = time.Since(start)
+		durations[ServiceName] = time.Since(start)
 	}
 
 	/* 4. Show Configuration Profile */
@@ -319,21 +356,31 @@ func connectAction(ctx *cli.Context) error {
 		// Update the configuration file
 		// Call D-bus to get the CA directory from rhsm
 		if err = getRHSMConfigOption("rhsm.ca_cert_dir", &config.CADir); err != nil {
-			errorMessages[BrandName] = fmt.Errorf("cannot get rhsm configuration: %w", err)
+			errorMessages[ServiceName] = LogMessage{
+				level: log.LevelWarn,
+				message: fmt.Errorf("cannot get rhsm configuration: %w",
+					err)}
 		}
 		// Generate a new http client configured with mutual TLS certificate
 		tlsConfig, err := config.CreateTLSClientConfig()
 		if err != nil {
-			errorMessages[BrandName] = fmt.Errorf("cannot configure TLS: %w", err)
+			errorMessages[ServiceName] = LogMessage{
+				level: log.LevelWarn,
+				message: fmt.Errorf("cannot configure TLS: %w",
+					err)}
+
 		}
 		client := http.NewHTTPClient(tlsConfig)
 
 		// Get the user profile
 		profile, err := getConfProfile(client)
 		if err != nil {
-			errorMessages[BrandName] = fmt.Errorf("Cannot get the user profile: %w", err)
+			errorMessages[ServiceName] = LogMessage{
+				level: log.LevelWarn,
+				message: fmt.Errorf("cannot get the user profile: %w",
+					err)}
 		} else {
-			fmt.Printf(infoPrefix + " Enabled console.redhat.com services: ")
+			fmt.Printf(uiSettings.iconInfo + " Enabled console.redhat.com services: ")
 			showConfProfile(&profile)
 			fmt.Printf("\n")
 		}
@@ -365,45 +412,56 @@ func disconnectAction(ctx *cli.Context) error {
 
 	var start time.Time
 	durations := make(map[string]time.Duration)
-	errorMessages := make(map[string]error)
+	errorMessages := make(map[string]LogMessage)
 	hostname, err := os.Hostname()
 	if err != nil {
 		return cli.Exit(err, 1)
 	}
 	fmt.Printf("Disconnecting %v from %v.\nThis might take a few seconds.\n\n", hostname, Provider)
 
-	_, disconnectedPrefix, errorPrefix, _, isColorful := getColorPreferences(ctx)
-
-	/* 1. Deactivate rhcd daemon */
+	/* 1. Deactivate yggdrasil (rhcd) service */
 	start = time.Now()
-	progressMessage := fmt.Sprintf(" Deactivating the %v daemon", BrandName)
-	err = showProgress(progressMessage, isColorful, deactivate)
+	progressMessage := fmt.Sprintf(" Deactivating the %v service", ServiceName)
+	err = showProgress(progressMessage, deactivateService)
 	if err != nil {
-		errorMessages[BrandName] = fmt.Errorf("cannot deactivate daemon: %w", err)
-		fmt.Printf(errorPrefix+" Cannot deactivate the %v daemon\n", BrandName)
+		errorMessages[ServiceName] = LogMessage{
+			level: log.LevelError,
+			message: fmt.Errorf("cannot deactivate %s service: %w",
+				ServiceName, err)}
+		fmt.Printf(uiSettings.iconError+" Cannot deactivate the %v service\n", ServiceName)
 	} else {
-		fmt.Printf(disconnectedPrefix+" Deactivated the %v daemon\n", BrandName)
+		fmt.Printf(uiSettings.iconOK+" Deactivated the %v service\n", ServiceName)
 	}
-	durations[BrandName] = time.Since(start)
+	durations[ServiceName] = time.Since(start)
 
 	/* 2. Disconnect from Red Hat Insights */
 	start = time.Now()
-	err = showProgress(" Disconnecting from Red Hat Insights...", isColorful, unregisterInsights)
+	err = showProgress(" Disconnecting from Red Hat Insights...", unregisterInsights)
 	if err != nil {
-		errorMessages["insights"] = fmt.Errorf("cannot disconnect from Red Hat Insights: %w", err)
-		fmt.Printf(errorPrefix + " Cannot disconnect from Red Hat Insights\n")
+		errorMessages["insights"] = LogMessage{
+			level: log.LevelError,
+			message: fmt.Errorf("cannot disconnect from Red Hat Insights: %w",
+				err)}
+		fmt.Printf(uiSettings.iconError + " Cannot disconnect from Red Hat Insights\n")
 	} else {
-		fmt.Print(disconnectedPrefix + " Disconnected from Red Hat Insights\n")
+		fmt.Print(uiSettings.iconOK + " Disconnected from Red Hat Insights\n")
 	}
 	durations["insights"] = time.Since(start)
 
 	/* 3. Unregister system from Red Hat Subscription Management */
-	err = showProgress(" Disconnecting from Red Hat Subscription Management...", isColorful, unregister)
+	err = showProgress(
+		" Disconnecting from Red Hat Subscription Management...", unregister,
+	)
 	if err != nil {
-		errorMessages["rhsm"] = fmt.Errorf("cannot disconnect from Red Hat Subscription Management: %w", err)
-		fmt.Printf(errorPrefix + " Cannot disconnect from Red Hat Subscription Management\n")
+		errorMessages["rhsm"] = LogMessage{
+			level: log.LevelError,
+			message: fmt.Errorf("cannot disconnect from Red Hat Subscription Management: %w",
+				err)}
+		fmt.Printf(
+			uiSettings.iconError + " Cannot disconnect from Red Hat Subscription Management\n",
+		)
 	} else {
-		fmt.Printf(disconnectedPrefix + " Disconnected from Red Hat Subscription Management\n")
+		fmt.Printf(uiSettings.iconOK + " Disconnected from Red Hat Subscription Management\n")
 	}
 	durations["rhsm"] = time.Since(start)
 
@@ -445,8 +503,8 @@ type SystemStatus struct {
 	RHSMError         error  `json:"rhsm_error,omitempty"`
 	InsightsConnected bool   `json:"insights_connected"`
 	InsightsError     error  `json:"insights_error,omitempty"`
-	RHCDRunning       bool   `json:"rhcd_running"`
-	RHCDError         error  `json:"rhcd_error,omitempty"`
+	YggdrasilRunning  bool   `json:"yggdrasil_running"`
+	YggdrasilError    error  `json:"yggdrasil_error,omitempty"`
 }
 
 // printJSONStatus tries to print the system status as JSON to stdout.
@@ -460,39 +518,50 @@ func printJSONStatus(systemStatus *SystemStatus) error {
 	return nil
 }
 
+// beforeStatusAction ensures the user has supplied a correct `--format` flag.
+func beforeStatusAction(ctx *cli.Context) error {
+	// This is run after the `app.Before()` has been run,
+	// the uiSettings is already set up for us to modify.
+	format := ctx.String("format")
+	switch format {
+	case "":
+		return nil
+	case "json":
+		uiSettings.isMachineReadable = true
+		uiSettings.isRich = false
+		return nil
+	default:
+		err := fmt.Errorf(
+			"unsupported format: %s (supported formats: %s)",
+			format,
+			`"json"`,
+		)
+		return cli.Exit(err, 1)
+	}
+}
+
 // statusAction tries to print status of system. It means that it gives
 // answer on following questions:
 // 1. Is system registered to Red Hat Subscription Management?
 // 2. Is system connected to Red Hat Insights?
-// 3. Is rhcd.service running?
+// 3. Is yggdrasil.service (rhcd.service) running?
 // Status can be printed as human-readable text or machine-readable JSON document.
 // Format is influenced by --format json CLI option stored in CLI context
 func statusAction(ctx *cli.Context) (err error) {
 	var systemStatus SystemStatus
-	machineReadable := false
 	var machineReadablePrintFunc func(systemStatus *SystemStatus) error
 
-	// Only JSON file format is supported ATM
 	format := ctx.String("format")
-	if format != "" {
-		switch format {
-		case "json":
-			machineReadable = true
-			machineReadablePrintFunc = printJSONStatus
-		default:
-			err := fmt.Errorf(
-				"unsuported machine-readable format: %s (supported formats: %s)",
-				format, "\"json\"",
-			)
-			return cli.Exit(err, 1)
-		}
+	switch format {
+	case "json":
+		machineReadablePrintFunc = printJSONStatus
+	default:
+		break
 	}
-
-	connectedPrefix, disconnectedPrefix, errorPrefix, _, isColorful := getColorPreferences(ctx)
 
 	// When printing of status is requested, then print machine-readable file format
 	// at the end of this function
-	if machineReadable {
+	if uiSettings.isMachineReadable {
 		defer func(systemStatus *SystemStatus) {
 			err = machineReadablePrintFunc(systemStatus)
 			// When it was not possible to print status to machine-readable format, then
@@ -504,109 +573,39 @@ func statusAction(ctx *cli.Context) (err error) {
 					1)
 			}
 		}(&systemStatus)
-		// Disable all colors and animations
-		isColorful = false
 	}
 
 	hostname, err := os.Hostname()
 	if err != nil {
-		if machineReadable {
+		if uiSettings.isMachineReadable {
 			systemStatus.HostnameError = err
 		} else {
 			return cli.Exit(err, 1)
 		}
 	}
 
-	if machineReadable {
+	if uiSettings.isMachineReadable {
 		systemStatus.SystemHostname = hostname
 	} else {
 		fmt.Printf("Connection status for %v:\n\n", hostname)
 	}
 
 	/* 1. Get Status of RHSM */
-	uuid, err := getConsumerUUID()
+	err = rhsmStatus(&systemStatus)
 	if err != nil {
 		return cli.Exit(err, 1)
-	}
-	if uuid == "" {
-		if machineReadable {
-			systemStatus.RHSMConnected = false
-		} else {
-			fmt.Printf(disconnectedPrefix + " Not connected to Red Hat Subscription Management\n")
-		}
-	} else {
-		if machineReadable {
-			systemStatus.RHSMConnected = true
-		} else {
-			fmt.Printf(connectedPrefix + " Connected to Red Hat Subscription Management\n")
-		}
 	}
 
 	/* 2. Get status of insights-client */
-	var s *spinner.Spinner
-	if isColorful {
-		s = spinner.New(spinner.CharSets[9], 100*time.Millisecond)
-		s.Suffix = " Checking Red Hat Insights..."
-		s.Start()
-	}
-	isRegistered, err := insightsIsRegistered()
-	if isColorful {
-		s.Stop()
-	}
-	if isRegistered {
-		if machineReadable {
-			systemStatus.InsightsConnected = true
-		} else {
-			fmt.Print(connectedPrefix + " Connected to Red Hat Insights\n")
-		}
-	} else {
-		if err == nil {
-			if machineReadable {
-				systemStatus.InsightsConnected = true
-			} else {
-				fmt.Print(disconnectedPrefix + " Not connected to Red Hat Insights\n")
-			}
-		} else {
-			if machineReadable {
-				systemStatus.InsightsConnected = false
-				systemStatus.InsightsError = err
-			} else {
-				fmt.Printf(errorPrefix+" Cannot execute insights-client: %v\n", err)
-			}
-		}
-	}
+	insightStatus(&systemStatus)
 
-	/* 3. Get status of rhcd */
-	conn, err := systemd.NewSystemConnection()
+	/* 3. Get status of yggdrasil (rhcd) service */
+	err = serviceStatus(&systemStatus)
 	if err != nil {
-		systemStatus.RHCDRunning = false
-		systemStatus.RHCDError = err
 		return cli.Exit(err, 1)
 	}
-	defer conn.Close()
-	unitName := ShortName + "d.service"
-	properties, err := conn.GetUnitProperties(unitName)
-	if err != nil {
-		systemStatus.RHCDRunning = false
-		systemStatus.RHCDError = err
-		return cli.Exit(err, 1)
-	}
-	activeState := properties["ActiveState"]
-	if activeState.(string) == "active" {
-		if machineReadable {
-			systemStatus.RHCDRunning = true
-		} else {
-			fmt.Printf(connectedPrefix+" The %v daemon is active\n", BrandName)
-		}
-	} else {
-		if machineReadable {
-			systemStatus.RHCDRunning = false
-		} else {
-			fmt.Printf(disconnectedPrefix+" The %v daemon is inactive\n", BrandName)
-		}
-	}
 
-	if !machineReadable {
+	if !uiSettings.isMachineReadable {
 		fmt.Printf("\nManage your connected systems: https://red.ht/connector\n")
 	}
 
@@ -669,6 +668,9 @@ func beforeAction(c *cli.Context) error {
 			log.Debug("Unable to set no-color flag to \"true\"")
 		}
 	}
+
+	// Set up standard output preference: colors, icons, etc.
+	configureUISettings(c)
 
 	return nil
 }
@@ -769,14 +771,14 @@ func main() {
 			},
 			Usage:       "Connects the system to " + Provider,
 			UsageText:   fmt.Sprintf("%v connect [command options]", app.Name),
-			Description: fmt.Sprintf("The connect command connects the system to Red Hat Subscription Management, Red Hat Insights and %v and activates the %v daemon that enables %v to interact with the system. For details visit: https://red.ht/connector", Provider, BrandName, Provider),
+			Description: fmt.Sprintf("The connect command connects the system to Red Hat Subscription Management, Red Hat Insights and %v and activates the %v service that enables %v to interact with the system. For details visit: https://red.ht/connector", Provider, ServiceName, Provider),
 			Action:      connectAction,
 		},
 		{
 			Name:        "disconnect",
 			Usage:       "Disconnects the system from " + Provider,
 			UsageText:   fmt.Sprintf("%v disconnect", app.Name),
-			Description: fmt.Sprintf("The disconnect command disconnects the system from Red Hat Subscription Management, Red Hat Insights and %v and deactivates the %v daemon. %v will no longer be able to interact with the system.", Provider, BrandName, Provider),
+			Description: fmt.Sprintf("The disconnect command disconnects the system from Red Hat Subscription Management, Red Hat Insights and %v and deactivates the %v service. %v will no longer be able to interact with the system.", Provider, ServiceName, Provider),
 			Action:      disconnectAction,
 		},
 		{
@@ -799,6 +801,7 @@ func main() {
 			Usage:       "Prints status of the system's connection to " + Provider,
 			UsageText:   fmt.Sprintf("%v status", app.Name),
 			Description: fmt.Sprintf("The status command prints the state of the connection to Red Hat Subscription Management, Red Hat Insights and %v.", Provider),
+			Before:      beforeStatusAction,
 			Action:      statusAction,
 		},
 	}
